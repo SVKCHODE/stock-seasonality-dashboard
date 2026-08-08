@@ -1,17 +1,17 @@
 import { NextResponse } from 'next/server';
+import { gunzipSync } from 'zlib';
 import { getMonthlyCandles } from '../../../lib/upstox.js';
+import { getNifty500Symbols } from '../../../lib/nifty500.js';
 
-const UNIVERSES = {
-  test10: ['RELIANCE','TCS','HDFCBANK','INFY','ICICIBANK','SBIN','ITC','DEEPINDS','AXISBANK','MARUTI']
-};
-
-const SEARCH_URL = 'https://api.upstox.com/v2/instruments/search';
+const TEST10 = ['RELIANCE','TCS','HDFCBANK','INFY','ICICIBANK','SBIN','ITC','DEEPINDS','AXISBANK','MARUTI'];
+const UPSTOX_NSE_INSTRUMENTS_URL = 'https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz';
+let instrumentMapCache = null;
 
 function average(values) { return values.reduce((sum, value) => sum + value, 0) / values.length; }
 function median(values) { const sorted = [...values].sort((a, b) => a - b); const middle = Math.floor(sorted.length / 2); return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2; }
 
-// Upstox monthly candle timestamps represent the start of the candle in IST.
-// Do NOT convert the timestamp to UTC before identifying its calendar month.
+// Upstox monthly timestamps contain the candle's IST calendar date.
+// Preserve YYYY-MM directly; converting to UTC can shift the month backwards.
 function monthKey(timestamp) {
   const text = String(timestamp ?? '');
   if (text.length >= 7 && text[4] === '-') return text.slice(0, 7);
@@ -23,14 +23,20 @@ function previousMonthKey(year, month) {
   return month === 1 ? `${year - 1}-12` : `${year}-${String(month - 1).padStart(2, '0')}`;
 }
 
-async function findEquity(symbol, token) {
-  const params = new URLSearchParams({ query: symbol, exchanges: 'NSE', segments: 'EQ', instrument_types: 'EQ', page_number: '1', records: '30' });
-  const response = await fetch(`${SEARCH_URL}?${params}`, { headers: { Accept: 'application/json', Authorization: `Bearer ${token}` }, cache: 'no-store' });
-  if (!response.ok) throw new Error(`Instrument search failed: ${response.status}`);
-  const body = await response.json();
-  const exact = (body?.data ?? []).find(item => item.segment === 'NSE_EQ' && item.instrument_type === 'EQ' && item.trading_symbol === symbol);
-  if (!exact) throw new Error(`NSE equity instrument not found for ${symbol}`);
-  return exact;
+async function getInstrumentMap(token) {
+  if (instrumentMapCache?.size) return instrumentMapCache;
+  const response = await fetch(UPSTOX_NSE_INSTRUMENTS_URL, { cache: 'no-store' });
+  if (!response.ok) throw new Error(`Upstox NSE instruments download failed: ${response.status}`);
+  const compressed = Buffer.from(await response.arrayBuffer());
+  const records = JSON.parse(gunzipSync(compressed).toString('utf8'));
+  const map = new Map();
+  for (const item of records) {
+    if (item?.segment === 'NSE_EQ' && ['EQ', 'BE'].includes(item?.instrument_type) && item?.trading_symbol && item?.instrument_key) {
+      map.set(String(item.trading_symbol).toUpperCase(), item);
+    }
+  }
+  instrumentMapCache = map;
+  return map;
 }
 
 function calculateMonthSeasonality(candles, month, years, now = new Date()) {
@@ -76,6 +82,16 @@ function calculateMonthSeasonality(candles, month, years, now = new Date()) {
   };
 }
 
+async function scanSymbol(symbol, instrument, month, years, fromDate, toDate, token) {
+  try {
+    const candles = await getMonthlyCandles(instrument.instrument_key, fromDate, toDate, token);
+    const stats = calculateMonthSeasonality(candles, month, years);
+    return { symbol, name: instrument.short_name || instrument.name || symbol, instrumentKey: instrument.instrument_key, ...stats };
+  } catch (error) {
+    return { error: { symbol, error: error.message } };
+  }
+}
+
 export async function GET(request) {
   const token = process.env.UPSTOX_ANALYTICS_TOKEN;
   if (!token) return NextResponse.json({ ok: false, error: 'UPSTOX_ANALYTICS_TOKEN is not configured' }, { status: 500 });
@@ -85,26 +101,69 @@ export async function GET(request) {
   const minAvg = Number(searchParams.get('minAvg') ?? 0);
   const minPositive = Number(searchParams.get('minPositive') ?? 0);
   const universeName = searchParams.get('universe') ?? 'test10';
-  const universe = UNIVERSES[universeName];
+  const offset = Math.max(0, Number(searchParams.get('offset') ?? 0));
+  const limit = Math.min(50, Math.max(1, Number(searchParams.get('limit') ?? (universeName === 'nifty500' ? 50 : 10))));
+
   if (!Number.isInteger(month) || month < 1 || month > 12) return NextResponse.json({ ok:false, error:'month must be 1-12' }, { status:400 });
   if (![3,5,6,10].includes(years)) return NextResponse.json({ ok:false, error:'years must be 3, 5, 6 or 10' }, { status:400 });
-  if (!universe) return NextResponse.json({ ok:false, error:'Unknown universe' }, { status:400 });
+  if (!Number.isFinite(offset) || !Number.isFinite(limit)) return NextResponse.json({ ok:false, error:'invalid batch parameters' }, { status:400 });
 
+  let symbols;
+  try {
+    symbols = universeName === 'nifty500' ? await getNifty500Symbols() : TEST10;
+  } catch (error) {
+    return NextResponse.json({ ok:false, error:error.message }, { status:502 });
+  }
+  if (!['test10', 'nifty500'].includes(universeName)) return NextResponse.json({ ok:false, error:'Unknown universe' }, { status:400 });
+
+  const batch = symbols.slice(offset, offset + limit);
   const today = new Date();
   const from = new Date(Date.UTC(today.getUTCFullYear() - years - 1, today.getUTCMonth(), 1));
   const fromDate = from.toISOString().slice(0,10);
   const toDate = today.toISOString().slice(0,10);
-  const results = [];
-  const errors = [];
 
-  for (const symbol of universe) {
-    try {
-      const instrument = await findEquity(symbol, token);
-      const candles = await getMonthlyCandles(instrument.instrument_key, fromDate, toDate, token);
-      const stats = calculateMonthSeasonality(candles, month, years, today);
-      if (stats.average >= minAvg && stats.positiveYears >= minPositive) results.push({ symbol, name: instrument.short_name || instrument.name || symbol, instrumentKey: instrument.instrument_key, ...stats });
-    } catch (error) { errors.push({ symbol, error: error.message }); }
+  let instruments;
+  try {
+    instruments = await getInstrumentMap(token);
+  } catch (error) {
+    return NextResponse.json({ ok:false, error:error.message }, { status:502 });
   }
+
+  const errors = [];
+  const candidates = [];
+  for (const symbol of batch) {
+    const instrument = instruments.get(symbol);
+    if (!instrument) errors.push({ symbol, error: 'NSE equity instrument not found in Upstox instrument master' });
+    else candidates.push({ symbol, instrument });
+  }
+
+  // Keep concurrency bounded so a Nifty 500 scan does not overwhelm Upstox.
+  const results = [];
+  const concurrency = 5;
+  for (let i = 0; i < candidates.length; i += concurrency) {
+    const group = candidates.slice(i, i + concurrency);
+    const groupResults = await Promise.all(group.map(item => scanSymbol(item.symbol, item.instrument, month, years, fromDate, toDate, token)));
+    for (const item of groupResults) {
+      if (item.error) errors.push(item.error);
+      else if (item.average >= minAvg && item.positiveYears >= minPositive) results.push(item);
+    }
+  }
+
   results.sort((a, b) => b.average - a.average);
-  return NextResponse.json({ ok: true, source: 'Upstox historical candles', universe: universeName, month, years, completedMonthOnly: true, scanned: universe.length, matched: results.length, results, errors });
+  return NextResponse.json({
+    ok: true,
+    source: 'Upstox historical candles',
+    universe: universeName,
+    month,
+    years,
+    completedMonthOnly: true,
+    offset,
+    limit,
+    batchCount: batch.length,
+    totalUniverse: symbols.length,
+    scanned: batch.length,
+    matched: results.length,
+    results,
+    errors
+  });
 }
