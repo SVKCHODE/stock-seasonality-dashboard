@@ -104,8 +104,8 @@ def parse_api_response(response, symbol):
 
 def historical_request(key, symbol, to_date, from_date):
     encoded = urllib.parse.quote(key, safe="")
-    # v2 historical candle API uses: /historical-candle/{instrument_key}/{interval}/{to_date}/{from_date}
-    url = f"{BASE}/historical-candle/{encoded}/1month/{to_date}/{from_date}"
+    # Upstox v2 expects the interval literal "month" (not "1month").
+    url = f"{BASE}/historical-candle/{encoded}/month/{to_date}/{from_date}"
     response = session.get(url, timeout=60)
     candles = parse_api_response(response, symbol)
     print(f"DIAGNOSTIC {symbol}: HTTP={response.status_code} URL={url} CANDLES={len(candles)}")
@@ -149,7 +149,6 @@ def main():
     if counts["nifty50"] < 40 or counts["niftynext50"] < 40 or counts["nifty500"] < 400 or counts["allnse"] < 1000:
         raise RuntimeError(f"Universe download looks incomplete: {counts}")
 
-    # Diagnostic probe: one liquid, long-lived NSE equity before the full backfill.
     probe = "RELIANCE" if "RELIANCE" in mapping else next(iter(mapping))
     today = datetime.now(timezone.utc).date()
     probe_from = date(today.year - 1, 1, 1).isoformat()
