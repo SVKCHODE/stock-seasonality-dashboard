@@ -5,40 +5,30 @@ import { useMemo, useState } from 'react';
 const months=['January','February','March','April','May','June','July','August','September','October','November','December'];
 
 export default function Home(){
- const [month,setMonth]=useState(6),[years,setYears]=useState(6),[universe,setUniverse]=useState('nifty500'),[minAvg,setMinAvg]=useState(0),[minPositive,setMinPositive]=useState(0),[scanned,setScanned]=useState(false),[loading,setLoading]=useState(false),[data,setData]=useState(null),[error,setError]=useState('');
+ const [month,setMonth]=useState(6),[years,setYears]=useState(6),[universe,setUniverse]=useState('nifty500'),[minAvg,setMinAvg]=useState(0),[minPositive,setMinPositive]=useState(0),[requireAllYears,setRequireAllYears]=useState(false),[scanned,setScanned]=useState(false),[loading,setLoading]=useState(false),[data,setData]=useState(null),[error,setError]=useState('');
  const results=useMemo(()=>data?.results ?? [],[data]);
  async function scan(){
    setLoading(true); setError(''); setScanned(true); setData(null);
    try{
-     const baseParams={month:String(month+1),years:String(years),universe,minAvg:String(minAvg),minPositive:String(minPositive)};
-     const batchSize=500;
-     const responses=[];
+     const baseParams={month:String(month+1),years:String(years),universe,minAvg:String(minAvg),minPositive:String(minPositive),requireAllYearsAboveMinAvg:String(requireAllYears)};
+     const batchSize=500; const responses=[];
      if(universe==='allnse'){
-       // All NSE is larger than the API's 500-stock batch limit. Keep requesting batches until the universe is exhausted.
        let offset=0;
        while(true){
          const params=new URLSearchParams({...baseParams,offset:String(offset),limit:String(batchSize)});
-         const response=await fetch(`/api/scan?${params.toString()}`,{cache:'no-store'});
-         const body=await response.json();
+         const response=await fetch(`/api/scan?${params.toString()}`,{cache:'no-store'}); const body=await response.json();
          if(!response.ok || !body.ok) throw new Error(body.error || 'Scanner request failed');
-         responses.push(body);
-         offset += body.batchCount ?? batchSize;
+         responses.push(body); offset += body.batchCount ?? batchSize;
          if((body.batchCount ?? 0) < batchSize || offset >= (body.totalUniverse ?? offset)) break;
        }
      } else {
-       const params=new URLSearchParams(baseParams);
-       const response=await fetch(`/api/scan?${params.toString()}`,{cache:'no-store'});
-       const body=await response.json();
-       if(!response.ok || !body.ok) throw new Error(body.error || 'Scanner request failed');
-       responses.push(body);
+       const params=new URLSearchParams(baseParams); const response=await fetch(`/api/scan?${params.toString()}`,{cache:'no-store'}); const body=await response.json();
+       if(!response.ok || !body.ok) throw new Error(body.error || 'Scanner request failed'); responses.push(body);
      }
      const combinedResults=responses.flatMap(body=>body.results ?? []).sort((a,b)=>b.average-a.average);
-     const combinedErrors=responses.flatMap(body=>body.errors ?? []);
-     const totalScanned=responses.reduce((sum,body)=>sum+(body.scanned ?? 0),0);
-     const totalUniverse=responses[0]?.totalUniverse ?? totalScanned;
+     const combinedErrors=responses.flatMap(body=>body.errors ?? []); const totalScanned=responses.reduce((sum,body)=>sum+(body.scanned ?? 0),0); const totalUniverse=responses[0]?.totalUniverse ?? totalScanned;
      setData({...responses[0],totalUniverse,scanned:totalScanned,matched:combinedResults.length,results:combinedResults,errors:combinedErrors});
-   }catch(e){setData(null);setError(e.message);}
-   finally{setLoading(false);}
+   }catch(e){setData(null);setError(e.message);} finally{setLoading(false);}
  }
  return <main style={{maxWidth:1150,margin:'0 auto',padding:'30px 18px',fontFamily:'Arial, sans-serif'}}>
   <div style={{fontSize:12,fontWeight:800,letterSpacing:1.2}}>MARKET RESEARCH TOOL · V0.7</div>
@@ -49,25 +39,21 @@ export default function Home(){
    <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))',gap:14}}>
     <label>Month<select value={month} onChange={e=>setMonth(Number(e.target.value))} style={input}>{months.map((m,i)=><option key={m} value={i}>{m}</option>)}</select></label>
     <label>Lookback<select value={years} onChange={e=>{const y=Number(e.target.value);setYears(y);if(minPositive>y)setMinPositive(0)}} style={input}>{[3,5,6,10].map(y=><option key={y} value={y}>{y} years</option>)}</select></label>
-    <label>Universe<select value={universe} onChange={e=>setUniverse(e.target.value)} style={input}>
-      <option value="nifty50">Nifty 50</option>
-      <option value="niftynext50">Nifty Next 50</option>
-      <option value="nifty500">NSE Nifty 500</option>
-      <option value="allnse">All NSE Equity</option>
-    </select></label>
+    <label>Universe<select value={universe} onChange={e=>setUniverse(e.target.value)} style={input}><option value="nifty50">Nifty 50</option><option value="niftynext50">Nifty Next 50</option><option value="nifty500">NSE Nifty 500</option><option value="allnse">All NSE Equity</option></select></label>
     <label>Minimum avg return (%)<input type="number" value={minAvg} onChange={e=>setMinAvg(e.target.value)} style={input}/></label>
     <label>Minimum positive years<select value={minPositive} onChange={e=>setMinPositive(Number(e.target.value))} style={input}><option value="0">Any</option>{[3,4,5,6].filter(y=>y<=years).map(y=><option key={y} value={y}>{y}/{years}</option>)}</select></label>
+    <label style={{display:'flex',alignItems:'center',gap:9,paddingTop:24,cursor:'pointer'}}><input type="checkbox" checked={requireAllYears} onChange={e=>setRequireAllYears(e.target.checked)} /> Every selected year must be above the minimum avg return</label>
    </div>
    <button onClick={scan} disabled={loading} style={{marginTop:18,padding:'12px 24px',border:0,borderRadius:9,fontWeight:800,cursor:loading?'wait':'pointer'}}>{loading?'Calculating…':'Scan Stocks'}</button>
   </section>
   <section style={{marginTop:22}}><div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>{scanned?'Results':'Run your first scan'}</h2><span style={{color:'#667085',fontSize:13}}>{data?`${data.matched} matched / ${data.scanned} scanned`:'Stored-data scan'}</span></div>
    {data?.dataUpdatedAt && <div style={{fontSize:12,color:'#667085',marginBottom:12}}>Historical data updated: {new Date(data.dataUpdatedAt).toLocaleString()}</div>}
    {error && <div style={{padding:14,borderRadius:10,border:'1px solid #fecdca',marginBottom:14}}>Scanner error: {error}</div>}
-   {results.length>0 && <div style={{overflowX:'auto',background:'#fff',border:'1px solid #e4e7ec',borderRadius:14}}><table style={{width:'100%',borderCollapse:'collapse',minWidth:850}}><thead><tr>{['Rank','Stock','Avg return','Positive years','Median','Best','Worst'].map(h=><th key={h} style={th}>{h}</th>)}</tr></thead><tbody>{results.map((s,i)=><tr key={s.symbol}>{[i+1,s.symbol,`${s.average>=0?'+':''}${s.average.toFixed(2)}%`,`${s.positiveYears}/${s.yearsAvailable}`,`${s.median>=0?'+':''}${s.median.toFixed(2)}%`,`${s.best>=0?'+':''}${s.best.toFixed(2)}%`,`${s.worst>=0?'+':''}${s.worst.toFixed(2)}%`].map((v,j)=><td key={j} style={td}>{v}</td>)}</tr>)}</tbody></table></div>}
+   {results.length>0 && <div style={{overflowX:'auto',background:'#fff',border:'1px solid #e4e7ec',borderRadius:14}}><table style={{width:'100%',borderCollapse:'collapse',minWidth:900}}><thead><tr>{['Rank','Stock','Avg return','Above threshold','Positive years','Median','Best','Worst'].map(h=><th key={h} style={th}>{h}</th>)}</tr></thead><tbody>{results.map((s,i)=><tr key={s.symbol}>{[i+1,s.symbol,`${s.average>=0?'+':''}${s.average.toFixed(2)}%`,`${s.qualifyingYears}/${s.yearsAvailable}`,`${s.positiveYears}/${s.yearsAvailable}`,`${s.median>=0?'+':''}${s.median.toFixed(2)}%`,`${s.best>=0?'+':''}${s.best.toFixed(2)}%`,`${s.worst>=0?'+':''}${s.worst.toFixed(2)}%`].map((v,j)=><td key={j} style={td}>{v}</td>)}</tr>)}</tbody></table></div>}
    {results.map(s=><details key={`detail-${s.symbol}`} style={{marginTop:12,border:'1px solid #e4e7ec',borderRadius:12,padding:'10px 14px',background:'#fff'}}><summary style={{fontWeight:800,cursor:'pointer'}}>{s.symbol} — yearly breakdown</summary><div style={{overflowX:'auto',marginTop:10}}><table style={{width:'100%',borderCollapse:'collapse',minWidth:520}}><thead><tr>{['Year','Previous month close','Month close','Return'].map(h=><th key={h} style={th}>{h}</th>)}</tr></thead><tbody>{s.yearlyReturns.map(r=><tr key={r.year}><td style={td}>{r.year}</td><td style={td}>{r.previousMonthClose.toFixed(2)}</td><td style={td}>{r.monthClose.toFixed(2)}</td><td style={td}>{`${r.returnPct>=0?'+':''}${r.returnPct.toFixed(2)}%`}</td></tr>)}</tbody></table></div></details>)}
    {data && results.length===0 && !error && <div style={{padding:18,border:'1px solid #e4e7ec',borderRadius:12}}>No stocks matched the selected filters.</div>}
    {data?.errors?.length>0 && <details style={{marginTop:14}}><summary>{data.errors.length} stock(s) could not be scanned</summary><pre style={{whiteSpace:'pre-wrap'}}>{JSON.stringify(data.errors,null,2)}</pre></details>}
-   <p style={{fontSize:12,color:'#667085',marginTop:12}}>Method: previous month-end close → selected month-end close. The current incomplete month is excluded when it is the selected month. Historical data is refreshed periodically; normal scans do not call Upstox.</p>
+   <p style={{fontSize:12,color:'#667085',marginTop:12}}>Method: previous month-end close → selected month-end close. The current incomplete month is excluded when it is the selected month. “Minimum positive years” counts years with positive returns; the optional consecutive filter is stricter and requires the return to be above your minimum average-return threshold in every selected year.</p>
   </section>
  </main>
 }
