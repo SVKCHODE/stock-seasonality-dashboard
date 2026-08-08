@@ -5,7 +5,7 @@ import os
 import time
 import urllib.parse
 import csv
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
@@ -35,59 +35,41 @@ session.headers.update({
 
 def request(url, headers=None, **kwargs):
     for attempt in range(5):
-        h = dict(headers or {})
-        r = session.get(url, timeout=90, headers=h, **kwargs)
+        r = session.get(url, timeout=90, headers=headers or {}, **kwargs)
         if r.status_code == 200:
             return r
         if r.status_code in (429, 500, 502, 503, 504):
             time.sleep(2 ** attempt)
             continue
-        raise RuntimeError(f"GET {url} failed: HTTP {r.status_code}: {r.text[:300]}")
+        raise RuntimeError(f"GET {url} failed: HTTP {r.status_code}: {r.text[:500]}")
     raise RuntimeError(f"GET {url} failed after retries")
 
 
 def index_symbols(url):
-    # Nifty Indices can return a BOM, quoted CSV, or an HTML/anti-bot response.
     r = request(url, headers={"Accept": "text/csv, text/plain, */*"})
-    raw = r.content
-    text = raw.decode("utf-8-sig", errors="replace")
-    sample = text[:500].lower()
-    if "<html" in sample or "access denied" in sample or "captcha" in sample:
+    text = r.content.decode("utf-8-sig", errors="replace")
+    if "<html" in text[:500].lower() or "captcha" in text[:500].lower():
         raise RuntimeError(f"Nifty Indices did not return CSV data: {url}")
-
     rows = list(csv.reader(io.StringIO(text)))
-    if not rows:
-        raise RuntimeError(f"Nifty index CSV is empty: {url}")
-
-    # Find the header row rather than assuming it is line 1.
-    header_idx = None
-    symbol_col = None
+    header_idx = symbol_col = None
     for i, row in enumerate(rows[:20]):
         normalized = [str(x).strip().strip('"').lower().replace(" ", "_") for x in row]
-        candidates = {"symbol", "ticker", "tradingsymbol", "trading_symbol"}
-        for candidate in candidates:
+        for candidate in ("symbol", "ticker", "tradingsymbol", "trading_symbol"):
             if candidate in normalized:
-                header_idx = i
-                symbol_col = normalized.index(candidate)
+                header_idx, symbol_col = i, normalized.index(candidate)
                 break
         if header_idx is not None:
             break
-
     if header_idx is None:
         raise RuntimeError(f"Could not identify Symbol column in Nifty CSV: {url}; headers={rows[:3]}")
-
-    symbols = []
-    for row in rows[header_idx + 1:]:
-        if len(row) <= symbol_col:
-            continue
-        symbol = row[symbol_col].strip().strip('"').upper()
-        if symbol and symbol not in {"SYMBOL", "TICKER"}:
-            symbols.append(symbol)
-    return sorted(set(symbols))
+    return sorted({
+        row[symbol_col].strip().strip('"').upper()
+        for row in rows[header_idx + 1:]
+        if len(row) > symbol_col and row[symbol_col].strip()
+    })
 
 
 def build_instrument_map():
-    # Upstox instrument master is authoritative for the current NSE equity universe.
     url = "https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz"
     r = session.get(url, timeout=120)
     r.raise_for_status()
@@ -109,15 +91,42 @@ def build_instrument_map():
 
 
 def build_universes(mapping):
-    universes = {name: index_symbols(url) for name, url in INDEX_CSV.items()}
-    universes["allnse"] = sorted(mapping.keys())
-    return universes
+    return {**{name: index_symbols(url) for name, url in INDEX_CSV.items()}, "allnse": sorted(mapping.keys())}
 
 
-def monthly_candles(key, from_date, to_date):
+def parse_api_response(response, symbol):
+    try:
+        body = response.json()
+    except ValueError:
+        raise RuntimeError(f"{symbol}: Upstox returned non-JSON HTTP {response.status_code}: {response.text[:300]}")
+    if response.status_code != 200:
+        raise RuntimeError(f"{symbol}: Upstox HTTP {response.status_code}: {body}")
+    if body.get("status") not in (None, "success"):
+        raise RuntimeError(f"{symbol}: Upstox API status={body.get('status')}: {body}")
+    data = body.get("data") or {}
+    candles = data.get("candles") or []
+    if not isinstance(candles, list):
+        raise RuntimeError(f"{symbol}: unexpected candles payload")
+    return candles
+
+
+def monthly_candles(key, symbol, from_date, to_date):
     encoded = urllib.parse.quote(key, safe="")
-    url = f"{BASE}/historical-candle/{encoded}/1month/{to_date}/{from_date}"
-    return session.get(url, timeout=60).json().get("data", {}).get("candles", [])
+    # Use the documented v2 route and keep each request within a safe date window.
+    # Monthly history is fetched in yearly chunks to avoid API range/retention limits.
+    start = date.fromisoformat(from_date)
+    end = date.fromisoformat(to_date)
+    all_candles = []
+    cursor = start
+    while cursor <= end:
+        chunk_end = min(date(cursor.year, 12, 31), end)
+        url = f"{BASE}/historical-candle/{encoded}/1month/{chunk_end.isoformat()}/{cursor.isoformat()}"
+        response = session.get(url, timeout=60)
+        candles = parse_api_response(response, symbol)
+        all_candles.extend(candles)
+        cursor = chunk_end + timedelta(days=1)
+        time.sleep(0.05)
+    return all_candles
 
 
 def normalize(candles):
@@ -160,10 +169,12 @@ def main():
             missing.append(symbol)
             continue
         try:
-            monthly = normalize(monthly_candles(key, from_date, to_date))
+            monthly = normalize(monthly_candles(key, symbol, from_date, to_date))
             if monthly:
                 write_history(symbol, key, monthly)
                 done += 1
+            else:
+                print(f"WARN {symbol}: Upstox returned zero monthly candles")
         except Exception as exc:
             print(f"WARN {symbol}: {exc}")
         if i % 25 == 0:
