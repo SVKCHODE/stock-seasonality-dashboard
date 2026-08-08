@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getMonthlyCandles } from '../../../../../../lib/upstox.js';
+import { getMonthlyCandles } from '../../../../lib/upstox.js';
 
 export async function GET() {
   const token = process.env.UPSTOX_ANALYTICS_TOKEN;
