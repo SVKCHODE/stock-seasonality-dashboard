@@ -27,7 +27,7 @@ export default function Home(){
    <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))',gap:14}}>
     <label>Month<select value={month} onChange={e=>setMonth(Number(e.target.value))} style={input}>{months.map((m,i)=><option key={m} value={i}>{m}</option>)}</select></label>
     <label>Lookback<select value={years} onChange={e=>setYears(Number(e.target.value))} style={input}>{[3,5,6,10].map(y=><option key={y} value={y}>{y} years</option>)}</select></label>
-    <label>Universe<select value={universe} onChange={e=>setUniverse(e.target.value)} style={input}><option value="test10">Initial 10-stock test universe</option><option value="deep">Deep Industries — validation</option></select></label>
+    <label>Universe<select value={universe} onChange={e=>setUniverse(e.target.value)} style={input}><option value="test10">Initial 10-stock test universe</option></select></label>
     <label>Minimum avg return (%)<input type="number" value={minAvg} onChange={e=>setMinAvg(e.target.value)} style={input}/></label>
     <label>Minimum positive years<select value={minPositive} onChange={e=>setMinPositive(Number(e.target.value))} style={input}><option value="0">Any</option>{[3,4,5,6].filter(y=>y<=years).map(y=><option key={y} value={y}>{y}/{years}</option>)}</select></label>
    </div>
