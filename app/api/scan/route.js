@@ -1,7 +1,13 @@
 import { NextResponse } from 'next/server';
+import fs from 'node:fs';
+import path from 'node:path';
 import marketData from '../../../data/monthly_prices.json';
 
 const TEST10 = ['RELIANCE','TCS','HDFCBANK','INFY','ICICIBANK','SBIN','ITC','DEEPINDS','AXISBANK','MARUTI'];
+const SUPPORTED_UNIVERSES = ['test10', 'nifty50', 'niftynext50', 'nifty500', 'allnse'];
+const DATA_DIR = path.join(process.cwd(), 'data');
+const HISTORY_DIR = path.join(DATA_DIR, 'history');
+const UNIVERSE_DIR = path.join(DATA_DIR, 'universes');
 
 function average(values) { return values.reduce((sum, value) => sum + value, 0) / values.length; }
 function median(values) { const sorted = [...values].sort((a, b) => a - b); const middle = Math.floor(sorted.length / 2); return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2; }
@@ -46,6 +52,33 @@ function calculateMonthSeasonality(stock, month, years, now = new Date()) {
   };
 }
 
+function loadUniverse(universeName) {
+  if (universeName === 'test10') return TEST10;
+  const file = path.join(UNIVERSE_DIR, `${universeName}.json`);
+  if (!fs.existsSync(file)) return [];
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return Array.isArray(parsed.stocks) ? parsed.stocks : [];
+  } catch {
+    return [];
+  }
+}
+
+function loadHistory(symbol) {
+  const file = path.join(HISTORY_DIR, `${symbol}.json`);
+  if (!fs.existsSync(file)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function loadStock(symbol, universeName) {
+  if (universeName === 'test10') return marketData.stocks?.[symbol] || null;
+  return loadHistory(symbol);
+}
+
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
   const month = Number(searchParams.get('month') ?? 7);
@@ -54,23 +87,26 @@ export async function GET(request) {
   const minPositive = Number(searchParams.get('minPositive') ?? 0);
   const universeName = searchParams.get('universe') ?? 'test10';
   const offset = Math.max(0, Number(searchParams.get('offset') ?? 0));
-  const limit = Math.min(500, Math.max(1, Number(searchParams.get('limit') ?? (universeName === 'nifty500' ? 500 : 10))));
+  const limit = Math.min(500, Math.max(1, Number(searchParams.get('limit') ?? (universeName === 'allnse' ? 500 : 500))));
 
   if (!Number.isInteger(month) || month < 1 || month > 12) return NextResponse.json({ ok:false, error:'month must be 1-12' }, { status:400 });
   if (![3,5,6,10].includes(years)) return NextResponse.json({ ok:false, error:'years must be 3, 5, 6 or 10' }, { status:400 });
   if (!Number.isFinite(offset) || !Number.isFinite(limit)) return NextResponse.json({ ok:false, error:'invalid batch parameters' }, { status:400 });
-  if (!['test10', 'nifty500'].includes(universeName)) return NextResponse.json({ ok:false, error:'Unknown universe' }, { status:400 });
+  if (!SUPPORTED_UNIVERSES.includes(universeName)) return NextResponse.json({ ok:false, error:'Unknown universe' }, { status:400 });
 
-  const allSymbols = universeName === 'nifty500' ? Object.keys(marketData.stocks || {}) : TEST10;
+  const allSymbols = loadUniverse(universeName);
+  if (universeName !== 'test10' && allSymbols.length === 0) {
+    return NextResponse.json({ ok:false, error:`${universeName} universe dataset is not populated in this deployment.` }, { status:503 });
+  }
   if (universeName === 'nifty500' && allSymbols.length < 450) {
-    return NextResponse.json({ ok:false, error:`Nifty 500 historical dataset is not populated yet (${allSymbols.length} stocks available). Run the GitHub Actions data refresh first.` }, { status:503 });
+    return NextResponse.json({ ok:false, error:`Nifty 500 universe is incomplete (${allSymbols.length} stocks available).` }, { status:503 });
   }
 
   const batch = allSymbols.slice(offset, offset + limit);
   const results = [];
   const errors = [];
   for (const symbol of batch) {
-    const stock = marketData.stocks?.[symbol];
+    const stock = loadStock(symbol, universeName);
     if (!stock) { errors.push({ symbol, error:'No historical data stored' }); continue; }
     const stats = calculateMonthSeasonality(stock, month, years);
     if (!stats) { errors.push({ symbol, error:`Not enough completed ${month}-month history` }); continue; }
@@ -80,9 +116,9 @@ export async function GET(request) {
   results.sort((a, b) => b.average - a.average);
   return NextResponse.json({
     ok: true,
-    source: marketData.source || 'Stored monthly dataset',
-    dataUpdatedAt: marketData.updatedAt,
-    historyYears: marketData.historyYears,
+    source: universeName === 'test10' ? (marketData.source || 'Stored monthly dataset') : 'Upstox historical monthly files',
+    dataUpdatedAt: universeName === 'test10' ? marketData.updatedAt : null,
+    historyYears: universeName === 'test10' ? marketData.historyYears : 10,
     universe: universeName,
     month,
     years,
