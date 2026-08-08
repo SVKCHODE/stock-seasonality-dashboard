@@ -55,16 +55,15 @@ export async function GET(request) {
   const { searchParams } = new URL(request.url);
   const month = Number(searchParams.get('month') ?? 7);
   const years = Number(searchParams.get('years') ?? 0);
-  const minAvg = Number(searchParams.get('minAvg') ?? 0);
+  const minReturn = Number(searchParams.get('minReturn') ?? searchParams.get('minAvg') ?? 0);
   const recentConsecutive = Math.max(1, Number(searchParams.get('recentConsecutive') ?? 4));
-  const minPositive = Number(searchParams.get('minPositive') ?? 0);
   const universeName = searchParams.get('universe') ?? 'test10';
   const offset = Math.max(0, Number(searchParams.get('offset') ?? 0));
   const limit = Math.min(500, Math.max(1, Number(searchParams.get('limit') ?? 500)));
 
   if (!Number.isInteger(month) || month < 1 || month > 12) return NextResponse.json({ ok:false, error:'month must be 1-12' }, { status:400 });
   if (!Number.isInteger(years) || years < 0) return NextResponse.json({ ok:false, error:'years must be 0 (maximum available) or a positive integer' }, { status:400 });
-  if (!Number.isFinite(minAvg) || !Number.isFinite(recentConsecutive)) return NextResponse.json({ ok:false, error:'invalid screening parameters' }, { status:400 });
+  if (!Number.isFinite(minReturn) || !Number.isFinite(recentConsecutive)) return NextResponse.json({ ok:false, error:'invalid screening parameters' }, { status:400 });
   if (!SUPPORTED_UNIVERSES.includes(universeName)) return NextResponse.json({ ok:false, error:'Unknown universe' }, { status:400 });
 
   const allSymbols = loadUniverse(universeName);
@@ -80,21 +79,18 @@ export async function GET(request) {
     const stats = calculateMonthSeasonality(stock, month, years);
     if (!stats) { errors.push({ symbol, error:`No completed ${month}-month history` }); continue; }
 
-    // The consecutive-years rule is based on the most recent available
-    // observations, not on a streak found somewhere inside the lookback window.
-    // A stock must have at least N available observations to satisfy an N-year rule.
     const recentReturns = stats.yearlyReturns.slice(0, recentConsecutive);
-    const recentConsecutiveMet = recentReturns.length === recentConsecutive && recentReturns.every(item => item.returnPct >= minAvg);
-    const qualifyingYears = stats.yearlyReturns.filter(item => item.returnPct >= minAvg).length;
+    const recentConsecutiveMet = recentReturns.length === recentConsecutive && recentReturns.every(item => item.returnPct > minReturn);
+    const qualifyingYears = stats.yearlyReturns.filter(item => item.returnPct > minReturn).length;
 
-    if (stats.average >= minAvg && recentConsecutiveMet) {
+    if (recentConsecutiveMet) {
       results.push({
         symbol,
         name: stock.name || symbol,
         instrumentKey: stock.instrumentKey,
         qualifyingYears,
         recentYearsChecked: recentReturns.length,
-        recentConsecutiveMet: recentConsecutiveMet ? recentConsecutive : 0,
+        recentConsecutiveMet: recentConsecutive,
         recentReturns,
         ...stats
       });
@@ -111,7 +107,7 @@ export async function GET(request) {
     month,
     years,
     completedMonthOnly:true,
-    minAvg,
+    minReturn,
     recentConsecutive,
     offset,
     limit,
