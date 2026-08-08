@@ -5,7 +5,7 @@ import { useMemo, useState } from 'react';
 const months=['January','February','March','April','May','June','July','August','September','October','November','December'];
 
 export default function Home(){
- const [month,setMonth]=useState(7),[years,setYears]=useState(5),[universe,setUniverse]=useState('test10'),[minAvg,setMinAvg]=useState(0),[minPositive,setMinPositive]=useState(0),[scanned,setScanned]=useState(false),[loading,setLoading]=useState(false),[data,setData]=useState(null),[error,setError]=useState('');
+ const [month,setMonth]=useState(6),[years,setYears]=useState(5),[universe,setUniverse]=useState('test10'),[minAvg,setMinAvg]=useState(0),[minPositive,setMinPositive]=useState(0),[scanned,setScanned]=useState(false),[loading,setLoading]=useState(false),[data,setData]=useState(null),[error,setError]=useState('');
  const results=useMemo(()=>data?.results ?? [],[data]);
  async function scan(){
    setLoading(true); setError(''); setScanned(true);
