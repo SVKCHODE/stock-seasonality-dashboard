@@ -9,7 +9,19 @@ const SEARCH_URL = 'https://api.upstox.com/v2/instruments/search';
 
 function average(values) { return values.reduce((sum, value) => sum + value, 0) / values.length; }
 function median(values) { const sorted = [...values].sort((a, b) => a - b); const middle = Math.floor(sorted.length / 2); return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2; }
-function monthKey(dateString) { const date = new Date(dateString); return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`; }
+
+// Upstox monthly candle timestamps represent the start of the candle in IST.
+// Do NOT convert the timestamp to UTC before identifying its calendar month.
+function monthKey(timestamp) {
+  const text = String(timestamp ?? '');
+  if (text.length >= 7 && text[4] === '-') return text.slice(0, 7);
+  const date = new Date(timestamp);
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+function previousMonthKey(year, month) {
+  return month === 1 ? `${year - 1}-12` : `${year}-${String(month - 1).padStart(2, '0')}`;
+}
 
 async function findEquity(symbol, token) {
   const params = new URLSearchParams({ query: symbol, exchanges: 'NSE', segments: 'EQ', instrument_types: 'EQ', page_number: '1', records: '30' });
@@ -22,35 +34,54 @@ async function findEquity(symbol, token) {
 }
 
 function calculateMonthSeasonality(candles, month, years, now = new Date()) {
-  const rows = candles.map(candle => ({ date: new Date(candle[0]), close: Number(candle[4]) })).filter(row => Number.isFinite(row.close)).sort((a, b) => a.date - b.date);
-  const closes = new Map(rows.map(row => [monthKey(row.date.toISOString()), row.close]));
+  const rows = candles
+    .map(candle => ({ timestamp: candle[0], calendarMonth: monthKey(candle[0]), close: Number(candle[4]) }))
+    .filter(row => Number.isFinite(row.close))
+    .sort((a, b) => String(a.timestamp).localeCompare(String(b.timestamp)));
+  const closes = new Map(rows.map(row => [row.calendarMonth, row.close]));
   const currentYear = now.getUTCFullYear();
   const currentMonth = now.getUTCMonth() + 1;
   const latestCompletedYear = currentMonth === month ? currentYear - 1 : currentYear;
   const returns = [];
 
   for (let year = latestCompletedYear; year > latestCompletedYear - years; year -= 1) {
-    const monthDate = `${year}-${String(month).padStart(2, '0')}`;
-    const previousDate = new Date(Date.UTC(year, month - 1, 0));
-    const previousKey = monthKey(previousDate.toISOString());
-    const currentClose = closes.get(monthDate);
+    const selectedKey = `${year}-${String(month).padStart(2, '0')}`;
+    const previousKey = previousMonthKey(year, month);
+    const currentClose = closes.get(selectedKey);
     const previousClose = closes.get(previousKey);
     if (Number.isFinite(currentClose) && Number.isFinite(previousClose) && previousClose !== 0) {
-      returns.push({ year, previousMonthClose: previousClose, monthClose: currentClose, returnPct: ((currentClose / previousClose) - 1) * 100 });
+      returns.push({
+        year,
+        previousMonth: previousKey,
+        selectedMonth: selectedKey,
+        previousMonthClose: previousClose,
+        monthClose: currentClose,
+        returnPct: ((currentClose / previousClose) - 1) * 100,
+        sourcePreviousTimestamp: rows.find(row => row.calendarMonth === previousKey)?.timestamp,
+        sourceSelectedTimestamp: rows.find(row => row.calendarMonth === selectedKey)?.timestamp
+      });
     }
   }
 
   const values = returns.map(item => item.returnPct);
   if (!values.length) throw new Error(`Not enough completed ${month}-month history`);
-  return { yearsAvailable: returns.length, average: average(values), positiveYears: values.filter(value => value > 0).length, median: median(values), best: Math.max(...values), worst: Math.min(...values), yearlyReturns: returns };
+  return {
+    yearsAvailable: returns.length,
+    average: average(values),
+    positiveYears: values.filter(value => value > 0).length,
+    median: median(values),
+    best: Math.max(...values),
+    worst: Math.min(...values),
+    yearlyReturns: returns
+  };
 }
 
 export async function GET(request) {
   const token = process.env.UPSTOX_ANALYTICS_TOKEN;
   if (!token) return NextResponse.json({ ok: false, error: 'UPSTOX_ANALYTICS_TOKEN is not configured' }, { status: 500 });
   const { searchParams } = new URL(request.url);
-  const month = Number(searchParams.get('month') ?? 8);
-  const years = Number(searchParams.get('years') ?? 5);
+  const month = Number(searchParams.get('month') ?? 7);
+  const years = Number(searchParams.get('years') ?? 6);
   const minAvg = Number(searchParams.get('minAvg') ?? 0);
   const minPositive = Number(searchParams.get('minPositive') ?? 0);
   const universeName = searchParams.get('universe') ?? 'test10';
