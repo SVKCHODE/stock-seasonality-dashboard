@@ -1,10 +1,10 @@
 import { NextResponse } from 'next/server';
 import { getMonthlyCandles } from '../../../lib/upstox.js';
 
-const TEST_UNIVERSE = [
-  'RELIANCE','TCS','HDFCBANK','INFY','ICICIBANK',
-  'SBIN','ITC','LT','AXISBANK','MARUTI'
-];
+const UNIVERSES = {
+  test10: ['RELIANCE','TCS','HDFCBANK','INFY','ICICIBANK','SBIN','ITC','LT','AXISBANK','MARUTI'],
+  deep: ['DEEPINDS']
+};
 
 const SEARCH_URL = 'https://api.upstox.com/v2/instruments/search';
 
@@ -62,7 +62,12 @@ function calculateMonthSeasonality(candles, month, years, now = new Date()) {
     const currentClose = closes.get(monthDate);
     const previousClose = closes.get(previousKey);
     if (Number.isFinite(currentClose) && Number.isFinite(previousClose) && previousClose !== 0) {
-      returns.push({ year, returnPct: ((currentClose / previousClose) - 1) * 100 });
+      returns.push({
+        year,
+        previousMonthClose: previousClose,
+        monthClose: currentClose,
+        returnPct: ((currentClose / previousClose) - 1) * 100
+      });
     }
   }
 
@@ -89,9 +94,12 @@ export async function GET(request) {
   const years = Number(searchParams.get('years') ?? 5);
   const minAvg = Number(searchParams.get('minAvg') ?? 0);
   const minPositive = Number(searchParams.get('minPositive') ?? 0);
+  const universeName = searchParams.get('universe') ?? 'test10';
+  const universe = UNIVERSES[universeName];
 
   if (!Number.isInteger(month) || month < 1 || month > 12) return NextResponse.json({ ok:false, error:'month must be 1-12' }, { status:400 });
-  if (![3,5,10].includes(years)) return NextResponse.json({ ok:false, error:'years must be 3, 5 or 10' }, { status:400 });
+  if (![3,5,6,10].includes(years)) return NextResponse.json({ ok:false, error:'years must be 3, 5, 6 or 10' }, { status:400 });
+  if (!universe) return NextResponse.json({ ok:false, error:'Unknown universe' }, { status:400 });
 
   const today = new Date();
   const from = new Date(Date.UTC(today.getUTCFullYear() - years - 1, today.getUTCMonth(), 1));
@@ -101,7 +109,7 @@ export async function GET(request) {
   const results = [];
   const errors = [];
 
-  for (const symbol of TEST_UNIVERSE) {
+  for (const symbol of universe) {
     try {
       const instrument = await findEquity(symbol, token);
       const candles = await getMonthlyCandles(instrument.instrument_key, fromDate, toDate, token);
@@ -123,11 +131,11 @@ export async function GET(request) {
   return NextResponse.json({
     ok: true,
     source: 'Upstox historical candles',
-    universe: 'Initial 10-stock NSE test universe',
+    universe: universeName,
     month,
     years,
     completedMonthOnly: true,
-    scanned: TEST_UNIVERSE.length,
+    scanned: universe.length,
     matched: results.length,
     results,
     errors
