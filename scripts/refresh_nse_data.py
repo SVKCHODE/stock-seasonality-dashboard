@@ -1,7 +1,8 @@
-import csv
+import gzip
 import json
 import os
 import time
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -9,128 +10,156 @@ import requests
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data"
-UNIVERSES = DATA / "universes"
 HISTORY = DATA / "history"
 TOKEN = os.environ.get("UPSTOX_ANALYTICS_TOKEN")
 if not TOKEN:
     raise SystemExit("UPSTOX_ANALYTICS_TOKEN is required")
 
-HEADERS = {"Authorization": f"Bearer {TOKEN}", "Accept": "application/json"}
 BASE = "https://api.upstox.com/v2"
-
-# Upstox instrument master is the safest way to map NSE symbols to instrument keys.
 INSTRUMENT_URL = "https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz"
+INDEX_CSV = {
+    "nifty50": "https://www.niftyindices.com/IndexConstituent/ind_nifty50list.csv",
+    "niftynext50": "https://www.niftyindices.com/IndexConstituent/ind_niftynext50list.csv",
+    "nifty500": "https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv",
+}
 
 session = requests.Session()
-session.headers.update(HEADERS)
+session.headers.update({"Authorization": f"Bearer {TOKEN}", "Accept": "application/json", "User-Agent": "Mozilla/5.0"})
 
-def get_json(url, params=None, retries=4):
-    for attempt in range(retries):
-        r = session.get(url, params=params, timeout=45)
+
+def request(url, **kwargs):
+    for attempt in range(5):
+        r = session.get(url, timeout=90, **kwargs)
         if r.status_code == 200:
-            return r.json()
+            return r
         if r.status_code in (429, 500, 502, 503, 504):
             time.sleep(2 ** attempt)
             continue
         raise RuntimeError(f"GET {url} failed: HTTP {r.status_code}: {r.text[:300]}")
     raise RuntimeError(f"GET {url} failed after retries")
 
-def load_universe(name):
-    p = UNIVERSES / f"{name}.json"
-    if not p.exists():
-        return []
-    obj = json.loads(p.read_text())
-    if isinstance(obj, list):
-        return obj
-    return obj.get("stocks", obj.get("symbols", []))
 
-def symbol_from_item(item):
-    if isinstance(item, str):
-        return item.upper()
-    return str(item.get("symbol", item.get("tradingsymbol", ""))).upper()
+def index_symbols(url):
+    r = request(url)
+    text = r.content.decode("utf-8-sig")
+    lines = text.splitlines()
+    if not lines:
+        return []
+    header = [x.strip().strip('"').lower() for x in lines[0].split(",")]
+    try:
+        col = header.index("symbol")
+    except ValueError:
+        raise RuntimeError(f"Index CSV has no Symbol column: {url}")
+    symbols = []
+    for line in lines[1:]:
+        parts = [x.strip().strip('"') for x in line.split(",")]
+        if len(parts) > col and parts[col]:
+            symbols.append(parts[col].upper())
+    return symbols
+
 
 def build_instrument_map():
-    # Upstox publishes the master as gzip JSON; requests transparently decompresses it.
-    r = session.get(INSTRUMENT_URL, timeout=90)
-    r.raise_for_status()
-    raw = r.content
-    import gzip
+    r = request(INSTRUMENT_URL)
     try:
-        text = gzip.decompress(raw).decode("utf-8")
+        records = json.loads(gzip.decompress(r.content).decode("utf-8"))
     except OSError:
-        text = raw.decode("utf-8")
-    records = json.loads(text)
+        records = json.loads(r.content.decode("utf-8"))
     mapping = {}
     for x in records:
         if x.get("segment") != "NSE_EQ":
             continue
-        symbol = str(x.get("trading_symbol", x.get("tradingsymbol", ""))).upper()
-        instrument_key = x.get("instrument_key")
-        if symbol and instrument_key and x.get("instrument_type", "EQ") == "EQ":
-            mapping.setdefault(symbol, instrument_key)
+        symbol = str(x.get("trading_symbol", "")).upper()
+        key = x.get("instrument_key")
+        if symbol and key and x.get("instrument_type") == "EQ":
+            mapping.setdefault(symbol, key)
     return mapping
 
-def monthly_candles(instrument_key, from_date, to_date):
-    # The API route uses URL-encoded instrument keys. Response timestamps are kept
-    # as supplied by Upstox; the scanner later interprets the calendar month in IST.
-    import urllib.parse
-    key = urllib.parse.quote(instrument_key, safe="")
-    url = f"{BASE}/historical-candle/{key}/1month/{to_date}/{from_date}"
-    body = get_json(url)
-    return body.get("data", {}).get("candles", [])
+
+def build_universes(mapping):
+    universes = {name: index_symbols(url) for name, url in INDEX_CSV.items()}
+    # All NSE Equity is derived from the current Upstox NSE_EQ instrument master.
+    universes["allnse"] = sorted(mapping.keys())
+    return universes
+
+
+def monthly_candles(key, from_date, to_date):
+    encoded = urllib.parse.quote(key, safe="")
+    url = f"{BASE}/historical-candle/{encoded}/1month/{to_date}/{from_date}"
+    r = request(url)
+    return r.json().get("data", {}).get("candles", [])
+
 
 def normalize(candles):
-    out = {}
-    for c in candles:
-        if len(c) < 5:
+    result = {}
+    for candle in candles:
+        if len(candle) < 5:
             continue
-        ts = str(c[0])
-        # Upstox monthly timestamps represent the start of the candle in IST.
-        month = ts[:7]
-        out[month] = {"timestamp": ts, "open": c[1], "high": c[2], "low": c[3], "close": c[4], "volume": c[5] if len(c) > 5 else None}
-    return out
+        timestamp = str(candle[0])
+        month = timestamp[:7]
+        result[month] = {
+            "timestamp": timestamp,
+            "open": candle[1],
+            "high": candle[2],
+            "low": candle[3],
+            "close": candle[4],
+            "volume": candle[5] if len(candle) > 5 else None,
+        }
+    return result
 
-def write_history(symbol, instrument_key, monthly):
+
+def write_history(symbol, key, monthly):
     HISTORY.mkdir(parents=True, exist_ok=True)
-    (HISTORY / f"{symbol}.json").write_text(json.dumps({"symbol": symbol, "instrumentKey": instrument_key, "monthly": monthly}, separators=(",", ":")) + "\n")
+    path = HISTORY / f"{symbol}.json"
+    path.write_text(json.dumps({"symbol": symbol, "instrumentKey": key, "monthly": monthly}, separators=(",", ":")) + "\n")
+
 
 def main():
-    names = ["nifty50", "niftynext50", "nifty500", "allnse"]
-    requested = {n: [symbol_from_item(x) for x in load_universe(n)] for n in names}
-    all_symbols = sorted({s for values in requested.values() for s in values if s})
-    if not all_symbols:
-        raise SystemExit("No universe manifests found. Populate data/universes/*.json first.")
-
     mapping = build_instrument_map()
-    # Ten calendar years plus the preceding month are fetched. Re-running overwrites
-    # the same month keys, making the job idempotent and safe for scheduled refreshes.
+    universes = build_universes(mapping)
+    all_symbols = sorted({s for symbols in universes.values() for s in symbols})
+    if not all_symbols:
+        raise SystemExit("No NSE equity instruments were returned by Upstox")
+
     today = datetime.now(timezone.utc).date()
     from_date = f"{today.year - 10:04d}-01-01"
     to_date = today.isoformat()
     done = 0
     missing = []
-    for symbol in all_symbols:
+
+    for i, symbol in enumerate(all_symbols, 1):
         key = mapping.get(symbol)
         if not key:
             missing.append(symbol)
             continue
-        candles = monthly_candles(key, from_date, to_date)
-        monthly = normalize(candles)
-        if monthly:
-            write_history(symbol, key, monthly)
-            done += 1
+        try:
+            monthly = normalize(monthly_candles(key, from_date, to_date))
+            if monthly:
+                write_history(symbol, key, monthly)
+                done += 1
+        except Exception as exc:
+            print(f"WARN {symbol}: {exc}")
+        if i % 25 == 0:
+            print(f"Progress: {i}/{len(all_symbols)} symbols; {done} histories stored")
         time.sleep(0.08)
+
+    DATA.mkdir(exist_ok=True)
+    (DATA / "universes").mkdir(parents=True, exist_ok=True)
+    for name, symbols in universes.items():
+        (DATA / "universes" / f"{name}.json").write_text(json.dumps({"stocks": symbols}, separators=(",", ":")) + "\n")
 
     metadata = {
         "updatedAt": datetime.now(timezone.utc).isoformat(),
-        "source": "Upstox",
+        "source": "Upstox + NSE index constituent CSVs",
         "years": 10,
-        "counts": {n: len(requested[n]) for n in names},
+        "counts": {name: len(symbols) for name, symbols in universes.items()},
         "historyStocks": done,
         "missingInstrumentSymbols": missing[:100],
     }
     (DATA / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
     print(json.dumps(metadata, indent=2))
+    if done == 0:
+        raise SystemExit("No historical datasets were stored")
+
 
 if __name__ == "__main__":
     main()
