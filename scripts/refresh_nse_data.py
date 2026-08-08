@@ -62,11 +62,7 @@ def index_symbols(url):
             break
     if header_idx is None:
         raise RuntimeError(f"Could not identify Symbol column in Nifty CSV: {url}; headers={rows[:3]}")
-    return sorted({
-        row[symbol_col].strip().strip('"').upper()
-        for row in rows[header_idx + 1:]
-        if len(row) > symbol_col and row[symbol_col].strip()
-    })
+    return sorted({row[symbol_col].strip().strip('"').upper() for row in rows[header_idx + 1:] if len(row) > symbol_col and row[symbol_col].strip()})
 
 
 def build_instrument_map():
@@ -98,32 +94,34 @@ def parse_api_response(response, symbol):
     try:
         body = response.json()
     except ValueError:
-        raise RuntimeError(f"{symbol}: Upstox returned non-JSON HTTP {response.status_code}: {response.text[:300]}")
+        raise RuntimeError(f"{symbol}: Upstox returned non-JSON HTTP {response.status_code}: {response.text[:500]}")
     if response.status_code != 200:
         raise RuntimeError(f"{symbol}: Upstox HTTP {response.status_code}: {body}")
     if body.get("status") not in (None, "success"):
         raise RuntimeError(f"{symbol}: Upstox API status={body.get('status')}: {body}")
-    data = body.get("data") or {}
-    candles = data.get("candles") or []
-    if not isinstance(candles, list):
-        raise RuntimeError(f"{symbol}: unexpected candles payload")
+    return (body.get("data") or {}).get("candles") or []
+
+
+def historical_request(key, symbol, to_date, from_date):
+    encoded = urllib.parse.quote(key, safe="")
+    # v2 historical candle API uses: /historical-candle/{instrument_key}/{interval}/{to_date}/{from_date}
+    url = f"{BASE}/historical-candle/{encoded}/1month/{to_date}/{from_date}"
+    response = session.get(url, timeout=60)
+    candles = parse_api_response(response, symbol)
+    print(f"DIAGNOSTIC {symbol}: HTTP={response.status_code} URL={url} CANDLES={len(candles)}")
+    if not candles:
+        print(f"DIAGNOSTIC {symbol}: response={response.text[:1000]}")
     return candles
 
 
 def monthly_candles(key, symbol, from_date, to_date):
-    encoded = urllib.parse.quote(key, safe="")
-    # Use the documented v2 route and keep each request within a safe date window.
-    # Monthly history is fetched in yearly chunks to avoid API range/retention limits.
     start = date.fromisoformat(from_date)
     end = date.fromisoformat(to_date)
     all_candles = []
     cursor = start
     while cursor <= end:
         chunk_end = min(date(cursor.year, 12, 31), end)
-        url = f"{BASE}/historical-candle/{encoded}/1month/{chunk_end.isoformat()}/{cursor.isoformat()}"
-        response = session.get(url, timeout=60)
-        candles = parse_api_response(response, symbol)
-        all_candles.extend(candles)
+        all_candles.extend(historical_request(key, symbol, chunk_end.isoformat(), cursor.isoformat()))
         cursor = chunk_end + timedelta(days=1)
         time.sleep(0.05)
     return all_candles
@@ -135,19 +133,13 @@ def normalize(candles):
         if len(candle) < 5:
             continue
         timestamp = str(candle[0])
-        result[timestamp[:7]] = {
-            "timestamp": timestamp,
-            "open": candle[1], "high": candle[2], "low": candle[3],
-            "close": candle[4], "volume": candle[5] if len(candle) > 5 else None,
-        }
+        result[timestamp[:7]] = {"timestamp": timestamp, "open": candle[1], "high": candle[2], "low": candle[3], "close": candle[4], "volume": candle[5] if len(candle) > 5 else None}
     return result
 
 
 def write_history(symbol, key, monthly):
     HISTORY.mkdir(parents=True, exist_ok=True)
-    (HISTORY / f"{symbol}.json").write_text(
-        json.dumps({"symbol": symbol, "instrumentKey": key, "monthly": monthly}, separators=(",", ":")) + "\n"
-    )
+    (HISTORY / f"{symbol}.json").write_text(json.dumps({"symbol": symbol, "instrumentKey": key, "monthly": monthly}, separators=(",", ":")) + "\n")
 
 
 def main():
@@ -157,8 +149,17 @@ def main():
     if counts["nifty50"] < 40 or counts["niftynext50"] < 40 or counts["nifty500"] < 400 or counts["allnse"] < 1000:
         raise RuntimeError(f"Universe download looks incomplete: {counts}")
 
-    all_symbols = sorted({s for symbols in universes.values() for s in symbols})
+    # Diagnostic probe: one liquid, long-lived NSE equity before the full backfill.
+    probe = "RELIANCE" if "RELIANCE" in mapping else next(iter(mapping))
     today = datetime.now(timezone.utc).date()
+    probe_from = date(today.year - 1, 1, 1).isoformat()
+    probe_to = today.isoformat()
+    print(f"Starting Upstox historical diagnostic for {probe} ({mapping[probe]})")
+    probe_candles = historical_request(mapping[probe], probe, probe_to, probe_from)
+    if not probe_candles:
+        raise RuntimeError("Upstox historical-candle diagnostic returned zero candles. See DIAGNOSTIC lines above.")
+
+    all_symbols = sorted({s for symbols in universes.values() for s in symbols})
     from_date = f"{today.year - 10:04d}-01-01"
     to_date = today.isoformat()
     done = 0
@@ -184,13 +185,7 @@ def main():
     (DATA / "universes").mkdir(parents=True, exist_ok=True)
     for name, symbols in universes.items():
         (DATA / "universes" / f"{name}.json").write_text(json.dumps({"stocks": symbols}, separators=(",", ":")) + "\n")
-
-    metadata = {
-        "updatedAt": datetime.now(timezone.utc).isoformat(),
-        "source": "Upstox + NSE index constituent CSVs",
-        "years": 10, "counts": counts, "historyStocks": done,
-        "missingInstrumentSymbols": missing[:100],
-    }
+    metadata = {"updatedAt": datetime.now(timezone.utc).isoformat(), "source": "Upstox + NSE index constituent CSVs", "years": 10, "counts": counts, "historyStocks": done, "missingInstrumentSymbols": missing[:100]}
     DATA.mkdir(exist_ok=True)
     (DATA / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
     print(json.dumps(metadata, indent=2))
