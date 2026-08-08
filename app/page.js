@@ -16,9 +16,9 @@ export default function Home(){
  const [month,setMonth]=useState(7),[years,setYears]=useState(5),[universe,setUniverse]=useState('Nifty 500'),[minAvg,setMinAvg]=useState(0),[minPositive,setMinPositive]=useState(0),[scanned,setScanned]=useState(false);
  const results=useMemo(()=>demoStocks.filter(s=>s.avg>=Number(minAvg)&&s.positive>=Number(minPositive)).sort((a,b)=>b.avg-a.avg),[minAvg,minPositive]);
  return <main style={{maxWidth:1150,margin:'0 auto',padding:'30px 18px'}}>
-  <div style={{fontSize:12,fontWeight:800,letterSpacing:1.2}}>MARKET RESEARCH TOOL</div>
+  <div style={{fontSize:12,fontWeight:800,letterSpacing:1.2}}>MARKET RESEARCH TOOL · V0.2</div>
   <h1 style={{fontSize:34,margin:'8px 0'}}>Seasonal Stock Scanner</h1>
-  <p style={{color:'#667085',maxWidth:760}}>Find stocks that historically perform well in a selected calendar month. Use the shortlist for deeper fundamental analysis elsewhere.</p>
+  <p style={{color:'#667085',maxWidth:760}}>Find stocks that historically perform well in a selected calendar month. Choose the month and historical period, scan a stock universe, then take the shortlist to Moneycontrol for deeper analysis.</p>
   <section style={{background:'#fff',border:'1px solid #e4e7ec',borderRadius:14,padding:20,marginTop:24}}>
    <h2 style={{marginTop:0}}>Screening criteria</h2>
    <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))',gap:14}}>
@@ -32,7 +32,7 @@ export default function Home(){
   </section>
   <section style={{marginTop:22}}><div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>{scanned?'Results':'Preview results'}</h2><span style={{color:'#667085',fontSize:13}}>{results.length} stocks matched</span></div>
    <div style={{overflowX:'auto',background:'#fff',border:'1px solid #e4e7ec',borderRadius:14}}><table style={{width:'100%',borderCollapse:'collapse',minWidth:760}}><thead><tr>{['Rank','Stock','Avg return','Positive years','Median','Best','Worst'].map(h=><th key={h} style={th}>{h}</th>)}</tr></thead><tbody>{results.map((s,i)=><tr key={s.symbol}>{[i+1,s.symbol,`+${s.avg.toFixed(1)}%`,`${s.positive}/${years}`,`${s.median>0?'+':''}${s.median.toFixed(1)}%`,`+${s.best.toFixed(1)}%`,`${s.worst>0?'+':''}${s.worst.toFixed(1)}%`].map((v,j)=><td key={j} style={td}>{v}</td>)}</tr>)}</tbody></table></div>
-   <p style={{fontSize:12,color:'#667085',marginTop:12}}>Prototype results are illustrative. The next build connects this screen to real historical market data and the selected stock universe.</p>
+   <p style={{fontSize:12,color:'#667085',marginTop:12}}>Demo results only. Real NSE/Upstox historical data will replace these illustrative rows in the data-ingestion phase.</p>
   </section>
  </main>
 }
