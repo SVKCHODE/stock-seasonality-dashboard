@@ -10,11 +10,33 @@ export default function Home(){
  async function scan(){
    setLoading(true); setError(''); setScanned(true); setData(null);
    try{
-     const params=new URLSearchParams({month:String(month+1),years:String(years),universe,minAvg:String(minAvg),minPositive:String(minPositive)});
-     const response=await fetch(`/api/scan?${params.toString()}`,{cache:'no-store'});
-     const body=await response.json();
-     if(!response.ok || !body.ok) throw new Error(body.error || 'Scanner request failed');
-     setData(body);
+     const baseParams={month:String(month+1),years:String(years),universe,minAvg:String(minAvg),minPositive:String(minPositive)};
+     const batchSize=500;
+     const responses=[];
+     if(universe==='allnse'){
+       // All NSE is larger than the API's 500-stock batch limit. Keep requesting batches until the universe is exhausted.
+       let offset=0;
+       while(true){
+         const params=new URLSearchParams({...baseParams,offset:String(offset),limit:String(batchSize)});
+         const response=await fetch(`/api/scan?${params.toString()}`,{cache:'no-store'});
+         const body=await response.json();
+         if(!response.ok || !body.ok) throw new Error(body.error || 'Scanner request failed');
+         responses.push(body);
+         offset += body.batchCount ?? batchSize;
+         if((body.batchCount ?? 0) < batchSize || offset >= (body.totalUniverse ?? offset)) break;
+       }
+     } else {
+       const params=new URLSearchParams(baseParams);
+       const response=await fetch(`/api/scan?${params.toString()}`,{cache:'no-store'});
+       const body=await response.json();
+       if(!response.ok || !body.ok) throw new Error(body.error || 'Scanner request failed');
+       responses.push(body);
+     }
+     const combinedResults=responses.flatMap(body=>body.results ?? []).sort((a,b)=>b.average-a.average);
+     const combinedErrors=responses.flatMap(body=>body.errors ?? []);
+     const totalScanned=responses.reduce((sum,body)=>sum+(body.scanned ?? 0),0);
+     const totalUniverse=responses[0]?.totalUniverse ?? totalScanned;
+     setData({...responses[0],totalUniverse,scanned:totalScanned,matched:combinedResults.length,results:combinedResults,errors:combinedErrors});
    }catch(e){setData(null);setError(e.message);}
    finally{setLoading(false);}
  }
