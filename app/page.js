@@ -10,7 +10,7 @@ export default function Home(){
  async function scan(){
    setLoading(true); setError(''); setScanned(true); setData(null);
    try{
-     const baseParams={month:String(month+1),years:String(years),universe,minAvg:String(minAvg),recentConsecutive:String(recentConsecutive)};
+     const baseParams={month:String(month+1),years:String(years),universe,minAvg:String(minAvg),recentConsecutive:String(recentConsecutive),strictRecent:'true'};
      const batchSize=500; const responses=[];
      if(universe==='allnse'){
        let offset=0;
@@ -25,7 +25,7 @@ export default function Home(){
        const params=new URLSearchParams(baseParams); const response=await fetch(`/api/scan?${params.toString()}`,{cache:'no-store'}); const body=await response.json();
        if(!response.ok || !body.ok) throw new Error(body.error || 'Scanner request failed'); responses.push(body);
      }
-     const combinedResults=responses.flatMap(body=>body.results ?? []).sort((a,b)=>b.average-a.average);
+     const combinedResults=responses.flatMap(body=>body.results ?? []).filter(s=>(s.recentYearsChecked ?? recentConsecutive) >= recentConsecutive && (s.recentConsecutiveMet ?? 0) >= recentConsecutive && (s.average ?? -Infinity) >= Number(minAvg)).sort((a,b)=>b.average-a.average);
      const combinedErrors=responses.flatMap(body=>body.errors ?? []); const totalScanned=responses.reduce((sum,body)=>sum+(body.scanned ?? 0),0); const totalUniverse=responses[0]?.totalUniverse ?? totalScanned;
      setData({...responses[0],totalUniverse,scanned:totalScanned,matched:combinedResults.length,results:combinedResults,errors:combinedErrors});
    }catch(e){setData(null);setError(e.message);} finally{setLoading(false);}
@@ -52,7 +52,7 @@ export default function Home(){
    {results.map(s=><details key={`detail-${s.symbol}`} style={{marginTop:12,border:'1px solid #e4e7ec',borderRadius:12,padding:'10px 14px',background:'#fff'}}><summary style={{fontWeight:800,cursor:'pointer'}}>{s.symbol} — yearly breakdown</summary><div style={{overflowX:'auto',marginTop:10}}><table style={{width:'100%',borderCollapse:'collapse',minWidth:520}}><thead><tr>{['Year','Previous month close','Month close','Return'].map(h=><th key={h} style={th}>{h}</th>)}</tr></thead><tbody>{s.yearlyReturns.map(r=><tr key={r.year}><td style={td}>{r.year}</td><td style={td}>{r.previousMonthClose.toFixed(2)}</td><td style={td}>{r.monthClose.toFixed(2)}</td><td style={td}>{`${r.returnPct>=0?'+':''}${r.returnPct.toFixed(2)}%`}</td></tr>)}</tbody></table></div></details>)}
    {data && results.length===0 && !error && <div style={{padding:18,border:'1px solid #e4e7ec',borderRadius:12}}>No stocks matched the selected filters.</div>}
    {data?.errors?.length>0 && <details style={{marginTop:14}}><summary>{data.errors.length} stock(s) could not be scanned</summary><pre style={{whiteSpace:'pre-wrap'}}>{JSON.stringify(data.errors,null,2)}</pre></details>}
-   <p style={{fontSize:12,color:'#667085',marginTop:12}}>Method: previous month-end close → selected month-end close. Lookback defaults to maximum available history. Positive-year counts and historical breakdown use only the years available for each stock. A stock qualifies when its selected-month average meets the minimum and its most recent available years meet the consecutive-years threshold.</p>
+   <p style={{fontSize:12,color:'#667085',marginTop:12}}>Method: previous month-end close → selected month-end close. Lookback defaults to maximum available history. A stock qualifies only when its selected-month average meets the minimum and its most recent available years are all at or above the selected average-return threshold.</p>
   </section>
  </main>
 }
