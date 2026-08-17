@@ -1,13 +1,13 @@
 {
-  "updatedAt": "2026-08-08T16:15:37.451583+00:00",
+  "updatedAt": "2026-08-17T06:25:14.194049+00:00",
   "source": "Upstox + NSE index constituent CSVs",
   "years": 10,
   "counts": {
     "nifty50": 50,
     "niftynext50": 50,
     "nifty500": 500,
-    "allnse": 2428
+    "allnse": 2639
   },
-  "historyStocks": 2428,
+  "historyStocks": 2493,
   "missingInstrumentSymbols": []
 }
