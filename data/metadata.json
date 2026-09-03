@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-08-17T06:25:14.194049+00:00",
+  "updatedAt": "2026-09-03T10:51:06.289596+00:00",
   "source": "Upstox + NSE index constituent CSVs",
   "years": 10,
   "counts": {
@@ -8,6 +8,8 @@
     "nifty500": 500,
     "allnse": 2639
   },
-  "historyStocks": 2493,
-  "missingInstrumentSymbols": []
+  "historyStocks": 2638,
+  "missingInstrumentSymbols": [
+    "HFCL"
+  ]
 }
