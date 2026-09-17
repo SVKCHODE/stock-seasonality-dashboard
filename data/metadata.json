@@ -1,15 +1,17 @@
 {
-  "updatedAt": "2026-09-03T10:51:06.289596+00:00",
+  "updatedAt": "2026-09-17T11:23:05.682819+00:00",
   "source": "Upstox + NSE index constituent CSVs",
   "years": 10,
   "counts": {
     "nifty50": 50,
     "niftynext50": 50,
-    "nifty500": 500,
-    "allnse": 2639
+    "nifty500": 501,
+    "allnse": 2659
   },
-  "historyStocks": 2638,
+  "historyStocks": 2649,
   "missingInstrumentSymbols": [
+    "DUMMYHEG",
+    "HEG",
     "HFCL"
   ]
 }
