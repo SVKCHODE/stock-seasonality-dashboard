@@ -1,0 +1,18 @@
+[
+  {
+    "symbol": "BAGMANE",
+    "error": "instrument not found"
+  },
+  {
+    "symbol": "BIRET",
+    "error": "instrument not found"
+  },
+  {
+    "symbol": "DUMMYHEG",
+    "error": "instrument not found"
+  },
+  {
+    "symbol": "EMBASSY",
+    "error": "instrument not found"
+  }
+]
